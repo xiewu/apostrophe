@@ -266,8 +266,13 @@ module.exports = {
         }
         const locales = Object.keys(self.apos.i18n.getLocales());
         for (const locale of locales) {
+          const req = self.apos.task.getAnonReq({
+            locale,
+            mode: 'published'
+          });
           const urls = await self.getAll(req);
-          for (const url of urls) {
+          console.log('URLs are:', urls);
+          for (const { url } of urls) {
             let path = url.substring(baseUrl.length);
             if (path === '/') {
               path = '/index.html';
@@ -301,6 +306,7 @@ module.exports = {
         const req = self.apos.task.getAnonReq();
         req.url = url.substring(baseUrl.length);
         req.method = 'GET';
+        req.pipes = [];
         // Returns a promise that resolves to the page content
         return new Promise((resolve, reject) => {
           // Strategy: avoid the need to set up a real server by passing a simulated
@@ -315,6 +321,7 @@ module.exports = {
             write(output) {
               response += output;
             },
+            setHeader() {},
             send(body = '') {
               if ((typeof body) === 'object') {
                 return resolve({ content: JSON.stringify(body) });

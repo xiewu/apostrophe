@@ -1161,23 +1161,6 @@ database.`);
             self.serve
           );
         }
-      },
-      '@apostrophecms/url:all': {
-        async allPageUrls(req, results, { excludeTypes }) {
-          const pages = await self.apos.page.find(req, {})
-            .areas(false)
-            .relationships(false)
-            .sort({
-              level: 1,
-              rank: 1
-            }).toArray();
-          for (const page of pages) {
-            if (excludeTypes.includes(type)) {
-              continue;
-            }
-            results.push(...await self.apos.doc.getManager(page.type).getUrlMetadata());
-          }
-        }
       }
     };
   },

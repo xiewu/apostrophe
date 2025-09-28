@@ -396,7 +396,7 @@ module.exports = {
         }
       },
 
-      '@apostrophecms/url:getAll': {
+      '@apostrophecms/url:getAllUrlMetadata': {
         async getUrlMetadata(req, results, { excludeTypes }) {
           if (excludeTypes.includes(self.__meta.name)) {
             return;
@@ -409,7 +409,7 @@ module.exports = {
           do {
             // Paginate through 100 at a time to avoid exhausting
             // memory
-            const docs = await self.getUrlMetadataQuery(req)
+            docs = await self.getUrlMetadataQuery(req)
               .skip(skip).limit(100).toArray();
             await Promise.all(docs.map(async doc => {
               results.push(...await self.getUrlMetadata(req, doc));
