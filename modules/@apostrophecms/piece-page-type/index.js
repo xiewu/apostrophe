@@ -15,7 +15,7 @@
 //
 // ### `piecesFilters`
 //
-// If present, this is an array of objects with `name` properties.This works
+// If present, this is an array of objects with `name` properties. This works
 // only if the corresponding query builders exist and have a `launder` method.
 // An array of choices for each is populated in `req.data.piecesFilters`. The
 // choices in the array are objects with `label` and `value` properties.
@@ -199,6 +199,23 @@ module.exports = {
 
       dispatchAll() {
         self.dispatch('/', self.indexPage);
+        if (self.apos.url.options.static) {
+          self.dispatch(`/page/:page`, req => {
+            req.query.page = req.params.page;
+            return self.indexPage(req);
+          });
+          for (const filter of self.piecesFilters) {
+            self.dispatch(`/${filter.name}/:filterValue`, req => {
+              req.query[filter.name] = req.params.filterValue;
+              return self.indexPage(req);
+            });
+            self.dispatch(`/${filter.name}/:filterValue/page/:page`, req => {
+              req.query[filter.name] = req.params.filterValue;
+              req.query.page = req.params.page;
+              return self.indexPage(req);
+            });
+          }
+        }
         self.dispatch('/:slug', self.showPage);
       },
 
@@ -367,6 +384,66 @@ module.exports = {
           };
         } else {
           return data;
+        }
+      },
+      async getUrlMetadata(_super, req, page) {
+        const metadata = _super(req, page);
+        if (!metadata.length) {
+          return metadata;
+        }
+        const query = self.indexQuery(req);
+        for (const filter of self.piecesFilters) {
+          // The choices for each filter should reflect the effect of all
+          // filters except this one (filtering by topic pares down the list of
+          // categories and vice versa)
+          const _query = query.clone();
+          _query[filter.name](undefined);
+          // Make sure we get the count for each choice so we can paginate
+          const choices = await _query.toChoices(filter.name, true);
+          for (const choice of choices) {
+            const pages = Math.min(1, Math.ceil(choice.count / self.perPage));
+            for (let page = 1; (page <= pages); page++) {
+              metadata.push({
+                ...metadata[0],
+                i18nId: `${metadata[0].i18nId}.${self.apos.util.slugify(choice.value)}.${page}`,
+                _url: metadata[0]._url + self.apos.url.getChoiceFilter(choice.name, choice.value, page)
+              });
+            }
+          }
+        }
+        const filters = await self.getPiecesFilters(query);
+        await query.toCount();
+        const pages = query.get('totalPages');
+        for (let page = 2; (2 <= pages); page++) {
+          metadata.push({
+            ...metadata[0],
+            i18nId: `${metadata[0].i18nId}.${page}`,
+            _url: metadata[0]._url + self.apos.url.getPageFilter(page)
+          });
+        }
+        return metadata;
+      },
+      // Returns a string suitable to append to the original page URL when we're
+      // specifying a particular filter and a page number. Pages start with 1
+      getChoiceFilter(name, value) {
+        name = encodeURIComponent(name);
+        value = encodeURIComponent(value);
+        if (self.apos.url.options.static) {
+          return `/${name}/${value}${page > 1 ? `/page/${page}` : ''}`;
+        } else {
+          return `?${name}=${value}${page > 1 ? `&page=${page}` : ''}`;
+        }
+      },
+      // Returns a string suitable to append to the original page URL when all we're
+      // adding is a page number. Pages start with 1
+      getPageFilter(page) {
+        if (page <= 1) {
+          return '';
+        }
+        if (self.apos.url.options.static) {
+          return `/page/${page}`;
+        } else {
+          return `?page=${page}`;
         }
       }
     };

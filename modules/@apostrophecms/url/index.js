@@ -5,9 +5,28 @@
 
 const _ = require('lodash');
 const qs = require('qs');
+const fs = require('fs');
 
 module.exports = {
+
   options: { alias: 'url' },
+
+  tasks(self) {
+    return {
+      'build-static-site': {
+        usage: 'Build a static site at a specified directory path',
+
+        async task(argv) {
+          self.apos.url.options.static = true;
+          if (argv._.length !== 2) {
+            throw new Error('A directory path for the static site must be given.');
+          }
+          await self.buildStaticSite(argv._[1]);
+        }
+      }
+    };
+  },
+
   methods(self) {
     return {
 
@@ -210,7 +229,112 @@ module.exports = {
         } else {
           return restoreHash(base);
         }
-      }
+      },
+
+      // Generate a list of all URLs reachable with the given req object.
+      // Used internally to implement static site generation and sitemaps. Usually called
+      // in a loop, once for each locale.
+      //
+      // Returns a list of objects with `url`, `type`, `_id`, `aposDocId` and `i18nId` properties.
+      //  `type`, `_id` and `aposDocId` are only present if the URL is a representation
+      // of a particular document in ApostropheCMS, but `i18nId` should always be present
+      // and should be consistent across localized versions of the same URL. If the URL is
+      // the main view of a document (e.g. an ordinary page URL or piece URL) it will be
+      // equal to `aposDocId`.
+      //
+      // To accommodate requirements such as `changefreq` and `priority` for sitemaps,
+      // additional such properties may be returned, although as of this writing
+      // Google explicitly states they are not expected or honored.
+      //
+      // This method emits the `@apostrophecms/url:all` event, so that handlers in any module
+      // can add URLs to the results. The `@apostrophecms/page`, `@apostrophecms/piece-type` and
+      // `@apostrophecms/piece-page-type` modules do so by default.
+      //
+      // Handlers should respect `excludeTypes`.
+      async getAll(req, { excludeTypes = [] } = {}) {
+        let results = [];
+        await self.emit('getAllUrlMetadata', req, results, { excludeTypes });
+        return results;
+      },
+
+      // Build a static site in the directory specified by `path`. 
+
+      async buildStaticSite(path) {
+        const baseUrl = self.apos.baseUrl;
+        if (!self.apos.baseUrl) {
+          throw new Error('The top-level baseUrl option must be set for static site builds');
+        }
+        const locales = Object.keys(self.apos.i18n.getLocales());
+        for (const locale of locales) {
+          const urls = await self.getAll(req);
+          for (const url of urls) {
+            let path = url.substring(baseUrl.length);
+            if (path === '/') {
+              path = '/index.html';
+            }
+            if (!path.match(/\.\w+$/)) {
+              path += '.html';
+            }
+            const dir = path.replace(/\/[^\/]+$/, '');
+            const body = await self.getBody(url);
+            fs.mkdirSync(`${path}${dir}`, { recursive: true });
+            fs.writeFileSync(`${path}${path}`, body);
+          }
+        }
+      },
+
+      // Returns a promise that resolves to the body of the URL, without the need to listen
+      // on a port. If the URL does not begin with the baseUrl an error is thrown. If the
+      // status code is not 200 an error is thrown. Suitable for building static sites.
+      // Not all features of Express req and res are supported
+      getBody(url) {
+        const baseUrl = self.apos.baseUrl;
+        if (!baseUrl) {
+          throw new Error('The top-level baseUrl option must be set to call this method');
+        }
+        if (!url.startsWith(baseUrl)) {
+          throw self.apos.error('invalid', `URL ${url} does not start with ${baseUrl}`);
+        }
+        if (url.includes('?')) {
+          throw self.apos.error('invalid', `The URL ${url} contains ? and cannot be part of a static site`);
+        }
+        const req = self.apos.task.getAnonReq();
+        req.url = url.substring(baseUrl.length);
+        req.method = 'GET';
+        // Returns a promise that resolves to the page content
+        return new Promise((resolve, reject) => {
+          // Strategy: avoid the need to set up a real server by passing a simulated
+          // req and res to the Express app
+          const res = {
+            status(code) {
+              if (code !== 200) {
+                return reject(self.apos.error('invalid', `Status code ${code} is not supported for static builds`));
+              }
+              return res;
+            },
+            write(output) {
+              response += output;
+            },
+            send(body = '') {
+              if ((typeof body) === 'object') {
+                return resolve({ content: JSON.stringify(body) });
+              }
+              return resolve({ content: response + body });
+            },
+            end(data = '') {
+              if ((typeof body) === 'object') {
+                return resolve({ content: JSON.stringify(body) });
+              }
+              return resolve({ content: response + data });
+            }
+          }
+          req.res = res;
+          res.req = req;
+          // Pass req and res to the Express app, this will eventually trigger one of the res
+          // methods above that resolve the promise
+          self.apos.app(req, res);
+        });
+      }      
     };
   }
 };
