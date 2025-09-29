@@ -6,6 +6,8 @@
 const _ = require('lodash');
 const qs = require('qs');
 const fs = require('fs');
+const cp = require('child_process');
+const waitOn = require('wait-on');
 
 module.exports = {
 
@@ -246,102 +248,102 @@ module.exports = {
       // additional such properties may be returned, although as of this writing
       // Google explicitly states they are not expected or honored.
       //
-      // This method emits the `@apostrophecms/url:all` event, so that handlers in any module
-      // can add URLs to the results. The `@apostrophecms/page`, `@apostrophecms/piece-type` and
-      // `@apostrophecms/piece-page-type` modules do so by default.
+      // This method emits the `@apostrophecms/url:getAllUrlMetadata` event, so that handlers in any module
+      // can add URLs to the results. The default implementation already calls `getAllUrlMetadata` on every
+      // doc type manager that has at least one doc in the database, so listening for the event is only
+      // for edge cases that can't be covered by extending `getAllUrlMetadata` or `getUrlMetadata` on
+      // such a manager.
       //
       // Handlers should respect `excludeTypes`.
       async getAll(req, { excludeTypes = [] } = {}) {
         let results = [];
+        const types = await self.apos.doc.db.distinct('type');
+        for (const type of types) {
+          if (!excludeTypes.includes(type)) {
+            results = [...results, ...await self.apos.doc.getManager(type).getAllUrlMetadata(req)];
+          }
+        }
         await self.emit('getAllUrlMetadata', req, results, { excludeTypes });
         return results;
       },
 
-      // Build a static site in the directory specified by `path`. 
+      // Build a static site in the directory specified by `dir`. 
+      // This is an implementation detail of the task. This method will
+      // listen on port 3123 and is not designed to be run in parallel.
+      // After execution the server on port 3123 remains open
 
-      async buildStaticSite(path) {
+      async buildStaticSite(dir) {
+        process.env.NODE_ENV = 'production';
         const baseUrl = self.apos.baseUrl;
         if (!self.apos.baseUrl) {
           throw new Error('The top-level baseUrl option must be set for static site builds');
         }
+        const releaseId = self.apos.util.generateId();
+        console.log('Building assets for static site...');
+        cp.execSync(`APOS_RELEASE_ID=${releaseId} NODE_ENV=production node app @apostrophecms/asset:build`, {
+          stdio: 'inherit'
+        });
+        console.log('Copying assets into static site...');
+        const assetsFrom = `${self.apos.rootDir}/public/apos-frontend/releases/${releaseId}`;
+        const assetsTo = `${dir}/apos-frontend/releases`;
+        fs.mkdirSync(assetsTo, { recursive: true });
+        cp.execSync(`cp -r ${assetsFrom} ${assetsTo}`);
+        console.log('Launching temporary server for static site page generation...');
+        const child = cp.spawn('node app', {
+          cwd: self.apos.rootDir,
+          shell: '/bin/bash',
+          stdio: 'inherit',
+          env: {
+            ...process.env,
+            APOS_RELEASE_ID: releaseId,
+            NODE_ENV: 'production',
+            PORT: '3123',
+            ADDRESS: '127.0.0.1'        
+          }
+        });
+        await waitOn({
+          resources: [
+            'tcp:127.0.0.1:3123'
+          ]
+        });
         const locales = Object.keys(self.apos.i18n.getLocales());
         for (const locale of locales) {
+          console.log(`Generating pages for locale ${locale}...`);
           const req = self.apos.task.getAnonReq({
             locale,
             mode: 'published'
           });
           const urls = await self.getAll(req);
-          console.log('URLs are:', urls);
           for (const { url } of urls) {
             let path = url.substring(baseUrl.length);
-            if (path === '/') {
-              path = '/index.html';
+            if (path.includes('?')) {
+              console.log(`Ignoring ${path}, not suitable for inclusion in a static site`);
+              continue;
             }
-            if (!path.match(/\.\w+$/)) {
-              path += '.html';
-            }
-            const dir = path.replace(/\/[^\/]+$/, '');
-            const body = await self.getBody(url);
-            fs.mkdirSync(`${path}${dir}`, { recursive: true });
-            fs.writeFileSync(`${path}${path}`, body);
+            let file = `${path}/index.html`;
+            const body = await getBody(path);
+            fs.mkdirSync(`${dir}${path}`, { recursive: true });
+            fs.writeFileSync(`${dir}${file}`, body);
           }
         }
-      },
+        // flush I/O for debugging
+        child.kill();
+        console.log('Static site built.');
 
-      // Returns a promise that resolves to the body of the URL, without the need to listen
-      // on a port. If the URL does not begin with the baseUrl an error is thrown. If the
-      // status code is not 200 an error is thrown. Suitable for building static sites.
-      // Not all features of Express req and res are supported
-      getBody(url) {
-        const baseUrl = self.apos.baseUrl;
-        if (!baseUrl) {
-          throw new Error('The top-level baseUrl option must be set to call this method');
-        }
-        if (!url.startsWith(baseUrl)) {
-          throw self.apos.error('invalid', `URL ${url} does not start with ${baseUrl}`);
-        }
-        if (url.includes('?')) {
-          throw self.apos.error('invalid', `The URL ${url} contains ? and cannot be part of a static site`);
-        }
-        const req = self.apos.task.getAnonReq();
-        req.url = url.substring(baseUrl.length);
-        req.method = 'GET';
-        req.pipes = [];
-        // Returns a promise that resolves to the page content
-        return new Promise((resolve, reject) => {
-          // Strategy: avoid the need to set up a real server by passing a simulated
-          // req and res to the Express app
-          const res = {
-            status(code) {
-              if (code !== 200) {
-                return reject(self.apos.error('invalid', `Status code ${code} is not supported for static builds`));
-              }
-              return res;
-            },
-            write(output) {
-              response += output;
-            },
-            setHeader() {},
-            send(body = '') {
-              if ((typeof body) === 'object') {
-                return resolve({ content: JSON.stringify(body) });
-              }
-              return resolve({ content: response + body });
-            },
-            end(data = '') {
-              if ((typeof body) === 'object') {
-                return resolve({ content: JSON.stringify(body) });
-              }
-              return resolve({ content: response + data });
-            }
+        async function getBody(path) {
+          const result = await fetch(`http://127.0.0.1:3123${path}`);
+          if (result.status !== 200) {
+            throw self.apos.error('invalid', `The path ${path} did not produce a 200 status`);
           }
-          req.res = res;
-          res.req = req;
-          // Pass req and res to the Express app, this will eventually trigger one of the res
-          // methods above that resolve the promise
-          self.apos.app(req, res);
-        });
-      }      
+          return result.text();
+        }
+      }
     };
   }
 };
+
+function pause(ms) {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => resolve(null), ms);
+  });
+}

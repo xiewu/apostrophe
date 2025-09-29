@@ -396,29 +396,6 @@ module.exports = {
         }
       },
 
-      '@apostrophecms/url:getAllUrlMetadata': {
-        async getUrlMetadata(req, results, { excludeTypes }) {
-          if (excludeTypes.includes(self.__meta.name)) {
-            return;
-          }
-
-          let skip = 0;
-          // Declared here so we can use do/while
-          let docs = null;
-
-          do {
-            // Paginate through 100 at a time to avoid exhausting
-            // memory
-            docs = await self.getUrlMetadataQuery(req)
-              .skip(skip).limit(100).toArray();
-            await Promise.all(docs.map(async doc => {
-              results.push(...await self.getUrlMetadata(req, doc));
-            }));
-            skip += docs.length;
-          } while (docs.length > 0);
-        },          
-      }
-
     };
   },
 
@@ -1672,6 +1649,27 @@ module.exports = {
           ...self.columns[key]
         }));
       },
+
+
+      async getAllUrlMetadata(req) {
+        const results = [];
+        let skip = 0;
+        // Declared here so we can use do/while
+        let docs = null;
+
+        do {
+          // Paginate through 100 at a time to avoid exhausting
+          // memory
+          docs = await self.getUrlMetadataQuery(req)
+            .skip(skip).limit(100).toArray();
+          await Promise.all(docs.map(async doc => {
+            results.push(...await self.getUrlMetadata(req, doc));
+          }));
+          skip += docs.length;
+        } while (docs.length > 0);
+
+        return results;
+      },          
 
       // Used to build sitemaps and assist in static site builds. Extend to
       // return all URLs that provide views of this document and
